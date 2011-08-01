@@ -1,5 +1,5 @@
 #include "vcflib/Variant.h"
-#include "fann.h"
+#include "doublefann.h"
 #include "convert.h"
 #include <fstream>
 #include <iostream>
@@ -34,7 +34,7 @@ void printSummary(char** argv) {
 
 #define PHRED_MAX 50000.0
 
-long double float2phred(long double prob) {
+long double double2phred(long double prob) {
     if (prob == 1)
         return PHRED_MAX;  // guards against "-0"
     long double p = -10 * (long double) log10(prob);
@@ -48,8 +48,8 @@ int main(int argc, char** argv)
 {   
 
     unsigned int num_output = 1;
-    //float* din = malloc(num_input * num_data * sizeof(float));
-    //float* dout = malloc(num_output * num_data * sizeof(float));
+    //double* din = malloc(num_input * num_data * sizeof(double));
+    //double* dout = malloc(num_output * num_data * sizeof(double));
 
     string variantFileName = "-";
 
@@ -155,34 +155,52 @@ int main(int argc, char** argv)
     fann_type *calc_out;
 
     Variant var(variantFile);
-    cout << variantFile.header;
+
+    if (!outputTag.empty()) {
+        variantFile.addHeaderLine("##INFO=<ID=" + outputTag + ",Number=A,Type=Float,Description=\"Probability given model described by " + annFile + "\">");
+        cout << variantFile.header << endl;
+    } else {
+        cout << variantFile.header; // XXX BUG there shouldn't have to be two ways to write the header!!!
+    }
 
     while (variantFile.getNextVariant(var)) {
-        //
-        // get the status of the validation (out of band)
-        // --- pass if omni mono has variant
-        // --- fail otherwise
-        // get the parameters we need
-        // QUAL
-        vector<fann_type> input; //[fields.size()];
-        if (useQUAL) {
-            input.push_back(var.quality); // QUAL
-        }
-        float val; // placeholder for conversions
-        for (vector<string>::iterator f = fields.begin(); f != fields.end(); ++f) {
-            convert(var.info[*f].front(), val); input.push_back(val); // XXX broken for multi-allelic
-        }
-        calc_out = fann_run(ann, &input[0]);
-
-        // rescale to [0,1] and convert to phred
-        float result = float2phred(1 - (1 + calc_out[0]) / 2);
-
-        if (writeQual) {
-            var.quality = result;
-        } else {
+        if (var.info.find(outputTag) != var.info.end()) {
             var.info[outputTag].clear();
-            var.info[outputTag].push_back(convert(result));
         }
+        double sumqual = 0;
+        // for alt, get the index,
+        for (vector<string>::iterator a = var.alt.begin(); a != var.alt.end(); ++a) {
+            string& alt = *a;
+            int altindex = var.getAltAlleleIndex(alt);
+
+            vector<fann_type> input; //[fields.size()];
+            if (useQUAL) {
+                input.push_back(var.quality); // QUAL
+            }
+            double val; // placeholder for conversions
+            for (vector<string>::iterator f = fields.begin(); f != fields.end(); ++f) {
+                if (var.info[*f].size() == var.alt.size()) {
+                    convert(var.info[*f].at(altindex), val); input.push_back(val);
+                } else {
+                    convert(var.info[*f].front(), val); input.push_back(val);
+                }
+            }
+            calc_out = fann_run(ann, &input[0]);
+
+            // rescale to [0,1] and convert to phred
+            double result = double2phred(1 - (1 + calc_out[0]) / 2);
+
+            if (!outputTag.empty()) {
+                var.info[outputTag].push_back(convert(result));
+            }
+            if (writeQual) {
+                sumqual += result;
+            }
+        }
+        if (writeQual) {
+            var.quality = sumqual / var.alt.size();
+        }
+
         cout << var << endl;
 
     }

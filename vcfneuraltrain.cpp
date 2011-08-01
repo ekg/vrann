@@ -1,5 +1,5 @@
 #include "vcflib/Variant.h"
-#include "fann.h"
+#include "doublefann.h"
 #include "convert.h"
 #include <fstream>
 #include <iostream>
@@ -10,7 +10,7 @@ using namespace std;
 using namespace vcf;
 
 
-struct fann_train_data *read_from_array(vector<float>& din, vector<float>& dout, unsigned int num_data, unsigned int num_input, unsigned int num_output) {
+struct fann_train_data *read_from_array(vector<double>& din, vector<double>& dout, unsigned int num_data, unsigned int num_input, unsigned int num_output) {
   unsigned int i, j;
   fann_type *data_input, *data_output;
   struct fann_train_data *data =
@@ -25,28 +25,28 @@ struct fann_train_data *read_from_array(vector<float>& din, vector<float>& dout,
   data->num_data = num_data;
   data->num_input = num_input;
   data->num_output = num_output;
-  data->input = (float **) calloc(num_data, sizeof(float *));
+  data->input = (double **) calloc(num_data, sizeof(double *));
   if(data->input == NULL) {
     fann_error(NULL, FANN_E_CANT_ALLOCATE_MEM);
     fann_destroy_train(data);
     return NULL;
   }
 
-  data->output = (float **) calloc(num_data, sizeof(float *));
+  data->output = (double **) calloc(num_data, sizeof(double *));
   if(data->output == NULL) {
     fann_error(NULL, FANN_E_CANT_ALLOCATE_MEM);
     fann_destroy_train(data);
     return NULL;
   }
 
-  data_input = (float *) calloc(num_input * num_data, sizeof(float));
+  data_input = (double *) calloc(num_input * num_data, sizeof(double));
   if(data_input == NULL) {
     fann_error(NULL, FANN_E_CANT_ALLOCATE_MEM);
     fann_destroy_train(data);
     return NULL;
   }
 
-  data_output = (float *) calloc(num_output * num_data, sizeof(float));
+  data_output = (double *) calloc(num_output * num_data, sizeof(double));
   if(data_output == NULL) {
     fann_error(NULL, FANN_E_CANT_ALLOCATE_MEM);
     fann_destroy_train(data);
@@ -95,6 +95,7 @@ void printSummary(char** argv) {
          << "    -e, --target-error N    train until this error is reached, default 0.001" << endl
          << "    -m, --max-epochs N      train no more than this many epochs, default 500000" << endl
          << "    -r, --report-interval N report progress even N epochs, default 10" << endl
+         << "    -C, --cascade           use cascade training algorithm to build neural network during training" << endl
          //<< "    -r, --region          specify a region on which to target the analysis, requires a BGZF" << endl
          //<< "                          compressed file which has been indexed with tabix.  any number of" << endl
          //<< "                          regions may be specified." << endl
@@ -106,10 +107,10 @@ int main(int argc, char** argv)
 {   
 
     unsigned int num_output = 1;
-    //float* din = malloc(num_input * num_data * sizeof(float));
-    //float* dout = malloc(num_output * num_data * sizeof(float));
-    vector<float> din, dout;
-    map<string, vector<float> > dins; // to normalize into din
+    //double* din = malloc(num_input * num_data * sizeof(double));
+    //double* dout = malloc(num_output * num_data * sizeof(double));
+    vector<double> din, dout;
+    map<string, vector<double> > dins; // to normalize into din
 
     string variantFileName = "-";
 
@@ -121,13 +122,14 @@ int main(int argc, char** argv)
 
     unsigned int num_layers = 3;
     unsigned int num_neurons_hidden = 100;
-    float desired_error = (float) 0.001;
+    double desired_error = (double) 0.001;
     unsigned int max_epochs = 500000;
     unsigned int epochs_between_reports = 10;
 
     string annFile;
 
     bool normalizeInput = false;
+    bool cascadeTrain = false;
 
     int c;
 
@@ -153,12 +155,13 @@ int main(int argc, char** argv)
             {"target-error", required_argument, 0, 'e'},
             {"max-epochs", required_argument, 0, 'm'},
             {"report-interval", required_argument, 0, 'r'},
+            {"cascade", no_argument, 0, 'C'},
             {0, 0, 0, 0}
         };
         /* getopt_long stores the option index here. */
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hnv:f:P:F:a:l:H:e:m:r:",
+        c = getopt_long (argc, argv, "hnCv:f:P:F:a:l:H:e:m:r:",
                          long_options, &option_index);
 
         if (c == -1)
@@ -180,6 +183,10 @@ int main(int argc, char** argv)
                 } else {
                     fields.push_back(field);
                 }
+                break;
+
+            case 'C':
+                cascadeTrain = true;
                 break;
 
             case 'P':
@@ -210,6 +217,7 @@ int main(int argc, char** argv)
                     cerr << "could not parse --hidden-neurons" << endl;
                     exit(1);
                 }
+                break;
 
             case 'e':
                 if (!convert(optarg, desired_error)) {
@@ -299,7 +307,7 @@ int main(int argc, char** argv)
         if (useQUAL) {
             dins["QUAL"].push_back(var.quality); // QUAL
         }
-        float val; // placeholder for conversions
+        double val; // placeholder for conversions
         for (vector<string>::iterator f = fields.begin(); f != fields.end(); ++f) {
             convert(var.info[*f].front(), val); dins[*f].push_back(val);
         }
@@ -309,13 +317,13 @@ int main(int argc, char** argv)
 
     // normalize the inputs to -1, 1
     if (normalizeInput) {
-        for (map<string, vector<float> >::iterator i = dins.begin(); i != dins.end(); ++i) {
-            vector<float>& in = i->second;
+        for (map<string, vector<double> >::iterator i = dins.begin(); i != dins.end(); ++i) {
+            vector<double>& in = i->second;
             // get the min and max
-            float min = in.front();
-            float max = in.front();
-            for (vector<float>::iterator j = in.begin(); j != in.end(); ++j) {
-                float m = *j;
+            double min = in.front();
+            double max = in.front();
+            for (vector<double>::iterator j = in.begin(); j != in.end(); ++j) {
+                double m = *j;
                 if (m < min) {
                     min = m;
                 }
@@ -323,10 +331,10 @@ int main(int argc, char** argv)
                     max = m;
                 }
             }
-            float scaling = ( 1 - -1 ) / ( max - min );
+            double scaling = ( 1 - -1 ) / ( max - min );
             // normalize
-            for (vector<float>::iterator j = in.begin(); j != in.end(); ++j) {
-                float& m = *j;
+            for (vector<double>::iterator j = in.begin(); j != in.end(); ++j) {
+                double& m = *j;
                 m -= min;
                 m *= scaling;
             }
@@ -334,13 +342,13 @@ int main(int argc, char** argv)
     }
     // now drop the input into the format which fann wants
 
-    vector<vector<float>*> dinsv;
-    for (map<string, vector<float> >::iterator i = dins.begin(); i != dins.end(); ++i) {
+    vector<vector<double>*> dinsv;
+    for (map<string, vector<double> >::iterator i = dins.begin(); i != dins.end(); ++i) {
         dinsv.push_back(&i->second);
     }
 
     for (int i = 0; i < dinsv.front()->size(); ++i) {
-        for (vector<vector<float>*>::iterator v = dinsv.begin(); v != dinsv.end(); ++v) {
+        for (vector<vector<double>*>::iterator v = dinsv.begin(); v != dinsv.end(); ++v) {
             din.push_back((*v)->at(i));
         }
     }
@@ -356,12 +364,17 @@ int main(int argc, char** argv)
     fann_train_data *data = read_from_array(din, dout, num_data, num_input, num_output);
 
     //fann_train_on_file(ann, "test.data", max_epochs, epochs_between_reports, desired_error);
-    fann_train_on_data(ann, data, max_epochs, epochs_between_reports, desired_error);
+    if (cascadeTrain) {
+        fann_cascadetrain_on_data(ann, data, max_epochs, epochs_between_reports, desired_error);
+    } else {
+        fann_train_on_data(ann, data, max_epochs, epochs_between_reports, desired_error);
+    }
 
     cerr << "saving neural net to " << annFile << endl;
     fann_save(ann, annFile.c_str());
 
     fann_destroy(ann);
+    fann_destroy_train(data);
 
     string annDescriptionFileName = annFile + ".fields";
     cerr << "writing neural net structure information to " << annDescriptionFileName << endl;
@@ -377,8 +390,6 @@ int main(int argc, char** argv)
     }
     annDescriptionFile << endl;
     annDescriptionFile.close();
-
-    // TODO free other data, dins, etc.
 
     return 0;
 }

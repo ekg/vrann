@@ -23,7 +23,8 @@ void printSummary(char** argv) {
          << "    -v, --vcf-file FILE     specifies the vcf file (or BGZipped, vcf.gz) to use for training" << endl
          << "                            if '-' specified, stdin is used (default)" << endl
          << "    -a, --ann-file FILE     save the ANN to this file (required).  metadata, specifically" << endl
-         << "                            the VCF INFO fields which are used, is saved as FILE.fields" << endl
+         << "                            the VCF INFO fields which are used, is saved as FILE.fields." << endl
+         << "                            Any number may be specified, the results are averaged at runtime." << endl
          << "    -o, --output-tag TAG    output the results of the neural network execution as TAG=..." << endl
          << "                            writes results to QUAL by default." << endl
          //<< "    -r, --region          specify a region on which to target the analysis, requires a BGZF" << endl
@@ -56,9 +57,7 @@ int main(int argc, char** argv)
     bool useQUAL = false;
     bool writeQual = true;
 
-    vector<string> fields;
-
-    string annFile;
+    vector<string> annFiles;
 
     string outputTag;
 
@@ -99,7 +98,7 @@ int main(int argc, char** argv)
                 break;
 
             case 'a':
-                annFile = optarg;
+                annFiles.push_back(optarg);
                 break;
 
             case 'o':
@@ -117,7 +116,7 @@ int main(int argc, char** argv)
         }
     }
 
-    if (annFile.empty()) {
+    if (annFiles.empty()) {
         cerr << "please supply a filename for the neural network, --ann-file" << endl;
         exit(1);
     }
@@ -134,30 +133,49 @@ int main(int argc, char** argv)
         return 1;
     } 
 
-    ifstream fieldsFile;
-    fieldsFile.open(string(annFile + ".fields").c_str());
-    string line;
-    getline(fieldsFile, line);
-    fields = split(line, "\t");
-    if (fields.empty()) {
-        cerr << "no fields provided, cannot execute neural net" << endl;
-        exit(1);
-    } else {
-        if (fields.front() == "QUAL") { // qual is always first
-            useQUAL = true;
-            fields.erase(fields.begin(), fields.begin() + 1); // erase the QUAL field, simplifies use
-        }
-    }
-    fieldsFile.close();
+    // check that all the fields files are the same
+    vector<struct fann*> anns;
+    vector<string> fields;
 
-    struct fann *ann = fann_create_from_file(annFile.c_str());
+    for (vector<string>::iterator annFile = annFiles.begin(); annFile != annFiles.end(); ++annFile) {
+        ifstream fieldsFile;
+        fieldsFile.open(string(*annFile + ".fields").c_str());
+        string line;
+        getline(fieldsFile, line);
+        vector<string> theseFields = split(line, "\t");
+        if (theseFields.empty()) {
+            cerr << "no fields provided, cannot execute neural net" << endl;
+            exit(1);
+        } else {
+            if (theseFields.front() == "QUAL") { // qual is always first according to vcfneuratrain
+                useQUAL = true;
+                theseFields.erase(theseFields.begin(), theseFields.begin() + 1); // erase the QUAL field, simplifies use
+            }
+        }
+        fieldsFile.close();
+
+        if (fields.empty()) {
+            fields = theseFields;
+        } else {
+            if (fields != theseFields) {
+                cerr << "differing field-sets provided" << endl
+                     << join(fields, " ") << endl
+                     << "... versus ..." << endl
+                     << join(theseFields, " ") << endl;
+                exit(1);
+            }
+        }
+
+        struct fann *ann = fann_create_from_file(annFile->c_str());
+        anns.push_back(ann);
+    }
 
     fann_type *calc_out;
 
     Variant var(variantFile);
 
     if (!outputTag.empty()) {
-        variantFile.addHeaderLine("##INFO=<ID=" + outputTag + ",Number=A,Type=Float,Description=\"Probability given model described by " + annFile + "\">");
+        variantFile.addHeaderLine("##INFO=<ID=" + outputTag + ",Number=A,Type=Float,Description=\"Probability given model described by " + join(annFiles, " ") + "\">");
         cout << variantFile.header << endl;
     } else {
         cout << variantFile.header; // XXX BUG there shouldn't have to be two ways to write the header!!!
@@ -185,10 +203,17 @@ int main(int argc, char** argv)
                     convert(var.info[*f].front(), val); input.push_back(val);
                 }
             }
-            calc_out = fann_run(ann, &input[0]);
 
-            // rescale to [0,1] and convert to phred
-            double result = double2phred(1 - (1 + calc_out[0]) / 2);
+            long double fresult = 0; // floating point result
+            for (vector<struct fann*>::iterator ann = anns.begin(); ann != anns.end(); ++ann) {
+                calc_out = fann_run(*ann, &input[0]);
+                // rescale to [0,1] and add to the result sum
+                fresult += 1 - (1 + calc_out[0]) / 2;
+            }
+
+            // convert to phred
+            //double result = double2phred(1 - (1 + calc_out[0]) / 2);
+            long double result = double2phred(fresult / anns.size());
 
             if (!outputTag.empty()) {
                 var.info[outputTag].push_back(convert(result));
@@ -205,7 +230,9 @@ int main(int argc, char** argv)
 
     }
 
-    fann_destroy(ann);
+    for (vector<struct fann*>::iterator ann = anns.begin(); ann != anns.end(); ++ann) {
+        fann_destroy(*ann);
+    }
 
     return 0;
 }

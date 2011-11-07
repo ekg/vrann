@@ -86,7 +86,8 @@ void printSummary(char** argv) {
          << "    -P, --pass-tag TAG      this VCF tag indicates that the record passes the filter which" << endl
          << "                            the neural net will approximate." << endl
          << "    -F, --fail-tag TAG      this VCF tag indicates that the record fails the filter which" << endl
-         << "                            the neural net will approximate." << endl
+         << "                            the neural net will approximate (default: missing PASS tag indicates" << endl
+         << "                            failure)." << endl
          << "    -a, --ann-file FILE     save the ANN to this file (required).  metadata, specifically" << endl
          << "                            the VCF INFO fields which are used, is saved as FILE.fields" << endl
          << "    -n, --normalize-input   normalize the input data to [-1,1]" << endl
@@ -261,10 +262,10 @@ int main(int argc, char** argv)
     }
 
     // TODO allow operation which assumes that all not-tagged records are passing or failing?
-    if (failTag.empty()) {
-        cerr << "please specify a tag that indicates that the record fails, --fail-tag" << endl;
-        exit(1);
-    }
+    //if (failTag.empty()) {
+    //    cerr << "please specify a tag that indicates that the record fails, --fail-tag" << endl;
+    //    exit(1);
+    //}
 
     /*
     while (optind < argc) {
@@ -293,10 +294,12 @@ int main(int argc, char** argv)
     while (variantFile.getNextVariant(var)) {
         //
         // get the status of the validation (out of band)
-        // --- pass if omni mono has variant
+        // --- pass if tagged
         // --- fail otherwise
         if (var.infoFlags.find(passTag) != var.infoFlags.end()) {
             dout.push_back(1); // passing
+        } else if (failTag.empty()) { // if we have an empty failTag, and we don't find a pass tag, we are failing
+            dout.push_back(-1);
         } else if (var.infoFlags.find(failTag) != var.infoFlags.end()) {
             dout.push_back(-1); // not passing
         } else {

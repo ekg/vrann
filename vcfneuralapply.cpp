@@ -20,13 +20,13 @@ void printSummary(char** argv) {
          << endl
          << "options:" << endl
          << "    -h, --help              this dialog." << endl
-         << "    -v, --vcf-file FILE     specifies the vcf file (or BGZipped, vcf.gz) to use for training" << endl
+         << "    -v, --vcf-file FILE     specifies the vcf file (or BGZipped, vcf.gz) to use for application" << endl
          << "                            if '-' specified, stdin is used (default)" << endl
-         << "    -a, --ann-file FILE     save the ANN to this file (required).  metadata, specifically" << endl
-         << "                            the VCF INFO fields which are used, is saved as FILE.fields." << endl
-         << "                            Any number may be specified, the results are averaged at runtime." << endl
+         << "    -a, --ann-file FILE     use the ANN in this file (required).  any number may be specified," << endl
+         << "                            as an ensemble.  the results are averaged at runtime." << endl
          << "    -o, --output-tag TAG    output the results of the neural network execution as TAG=..." << endl
          << "                            writes results to QUAL by default." << endl
+         << "    -i, --info STRING       add descriptive information to the VCF header output TAG definition" << endl
          //<< "    -r, --region          specify a region on which to target the analysis, requires a BGZF" << endl
          //<< "                          compressed file which has been indexed with tabix.  any number of" << endl
          //<< "                          regions may be specified." << endl
@@ -53,6 +53,7 @@ int main(int argc, char** argv)
     //double* dout = malloc(num_output * num_data * sizeof(double));
 
     string variantFileName = "-";
+    string information;
 
     bool useQUAL = false;
     bool writeQual = true;
@@ -77,12 +78,13 @@ int main(int argc, char** argv)
             {"vcf-file", required_argument, 0, 'v'},
             {"ann-file", required_argument, 0, 'a'},
             {"output-tag", required_argument, 0, 'o'},
+            {"info", required_argument, 0, 'i'},
             {0, 0, 0, 0}
         };
         /* getopt_long stores the option index here. */
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hv:a:o:",
+        c = getopt_long (argc, argv, "hv:a:o:i:",
                          long_options, &option_index);
 
         if (c == -1)
@@ -90,10 +92,9 @@ int main(int argc, char** argv)
 
         string field;
 
-        switch (c)
-        {
+        switch (c) {
 
-            case 'v':
+	    case 'v':
                 variantFileName = optarg;
                 break;
 
@@ -104,6 +105,10 @@ int main(int argc, char** argv)
             case 'o':
                 outputTag = optarg;
                 writeQual = false;
+                break;
+
+            case 'i':
+                information = optarg;
                 break;
 
             case 'h':
@@ -175,7 +180,11 @@ int main(int argc, char** argv)
     Variant var(variantFile);
 
     if (!outputTag.empty()) {
-        variantFile.addHeaderLine("##INFO=<ID=" + outputTag + ",Number=A,Type=Float,Description=\"Probability given model described by " + join(annFiles, " ") + "\">");
+	string infostr;
+	if (!information.empty()) {
+	    infostr = ".  " + information;
+	}
+        variantFile.addHeaderLine("##INFO=<ID=" + outputTag + ",Number=A,Type=Float,Description=\"Probability given model described by " + join(annFiles, " ") + infostr + "\">");
         cout << variantFile.header << endl;
     } else {
         cout << variantFile.header; // XXX BUG there shouldn't have to be two ways to write the header!!!

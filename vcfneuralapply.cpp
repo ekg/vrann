@@ -194,7 +194,7 @@ int main(int argc, char** argv)
         if (var.info.find(outputTag) != var.info.end()) {
             var.info[outputTag].clear();
         }
-        double sumqual = 0;
+        long double newqual = 0;
         // for alt, get the index,
         for (vector<string>::iterator a = var.alt.begin(); a != var.alt.end(); ++a) {
             string& alt = *a;
@@ -228,11 +228,15 @@ int main(int argc, char** argv)
                 var.info[outputTag].push_back(convert(result));
             }
             if (writeQual) {
-                sumqual += result;
+		if (newqual == 0) {
+		    newqual = result;
+		} else {
+		    newqual = min(newqual, result);
+		}
             }
         }
         if (writeQual) {
-            var.quality = sumqual / var.alt.size();
+            var.quality = newqual;
         }
 
         cout << var << endl;

@@ -85,9 +85,10 @@ void printSummary(char** argv) {
          << "    -f, --field FIELD       use this field as a training target, any number may be specified" << endl
          << "    -P, --pass-tag TAG      this VCF tag indicates that the record passes the filter which" << endl
          << "                            the neural net will approximate." << endl
-         << "    -F, --fail-tag TAG      this VCF tag indicates that the record fails the filter which" << endl
-         << "                            the neural net will approximate (default: missing PASS tag indicates" << endl
-         << "                            failure)." << endl
+	 << "    -V, --pass-tag-value V  the tag value which specifies if the given allele passes or fails" << endl
+	//<< "    -F, --fail-tag TAG      this VCF tag indicates that the record fails the filter which" << endl
+	//<< "                            the neural net will approximate (default: missing PASS tag indicates" << endl
+	//<< "                            failure)." << endl
          << "    -a, --ann-file FILE     save the ANN to this file (required).  metadata, specifically" << endl
          << "                            the VCF INFO fields which are used, is saved as FILE.fields" << endl
          << "    -n, --normalize-input   normalize the input data to [-1,1]" << endl
@@ -116,7 +117,7 @@ int main(int argc, char** argv)
     string variantFileName = "-";
 
     string passTag;
-    string failTag;
+    string passValue;
 
     bool useQUAL = false;
     vector<string> fields;
@@ -148,7 +149,8 @@ int main(int argc, char** argv)
             {"vcf-file", required_argument, 0, 'v'},
             {"field",  required_argument, 0, 'f'},
             {"pass-tag",  required_argument, 0, 'P'},
-            {"fail-tag",  required_argument, 0, 'F'},
+            //{"fail-tag",  required_argument, 0, 'F'},
+	    {"pass-tag-value", required_argument, 0, 'V'},
             {"ann-file", required_argument, 0, 'a'},
             {"normalize-input", no_argument, 0, 'n'},
             {"layers", required_argument, 0, 'l'},
@@ -162,7 +164,7 @@ int main(int argc, char** argv)
         /* getopt_long stores the option index here. */
         int option_index = 0;
 
-        c = getopt_long (argc, argv, "hnCv:f:P:F:a:l:H:e:m:r:",
+        c = getopt_long (argc, argv, "hnCv:f:P:a:l:H:e:m:r:V:",
                          long_options, &option_index);
 
         if (c == -1)
@@ -194,8 +196,8 @@ int main(int argc, char** argv)
                 passTag = optarg;
                 break;
 
-            case 'F':
-                failTag = optarg;
+            case 'V':
+                passValue = optarg;
                 break;
 
             case 'a':
@@ -296,24 +298,26 @@ int main(int argc, char** argv)
         // get the status of the validation (out of band)
         // --- pass if tagged
         // --- fail otherwise
-        if (var.infoFlags.find(passTag) != var.infoFlags.end()) {
-            dout.push_back(1); // passing
-        } else if (failTag.empty()) { // if we have an empty failTag, and we don't find a pass tag, we are failing
-            dout.push_back(-1);
-        } else if (var.infoFlags.find(failTag) != var.infoFlags.end()) {
-            dout.push_back(-1); // not passing
-        } else {
-            continue; // doesn't pass or fail
-        }
-        // get the parameters we need
-        // QUAL
-        if (useQUAL) {
-            dins["QUAL"].push_back(var.quality); // QUAL
-        }
-        double val; // placeholder for conversions
-        for (vector<string>::iterator f = fields.begin(); f != fields.end(); ++f) {
-            convert(var.info[*f].front(), val); dins[*f].push_back(val);
-        }
+	for (int a = 0; a < var.alt.size(); ++a) {
+	    if (var.info.find(passTag) != var.info.end()) {
+		if (var.info[passTag].at(a) == passValue) {
+		    dout.push_back(1); // passing
+		} else {
+		    dout.push_back(-1); // failing
+		}
+	    } else {
+		continue; // doesn't pass or fail
+	    }
+	    // get the parameters we need
+	    // QUAL
+	    if (useQUAL) {
+		dins["QUAL"].push_back(var.quality); // QUAL
+	    }
+	    double val; // placeholder for conversions
+	    for (vector<string>::iterator f = fields.begin(); f != fields.end(); ++f) {
+		convert(var.info[*f].at(a), val); dins[*f].push_back(val);
+	    }
+	}
     }
 
     unsigned int num_input = dins.size();

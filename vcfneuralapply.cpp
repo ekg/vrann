@@ -12,6 +12,112 @@ using namespace std;
 using namespace vcf;
 
 
+double mean(const vector<double>& data) {
+    double total = 0;
+    for (vector<double>::const_iterator i = data.begin(); i != data.end(); ++i) {
+        total += *i;
+    }
+    return total/data.size();
+}
+
+double median(vector <double>& data) {
+    double median;
+    size_t size = data.size();
+    // ascending order
+    sort(data.begin(), data.end());
+    // get middle value
+    if (size % 2 == 0) {
+        median = (data[size/2-1] + data[size/2]) / 2;
+    } else {
+        median = data[size/2];
+    }
+    return median;
+}
+
+double variance(const vector <double>& data, const double mean) {
+    double total = 0;
+    for (vector <double>::const_iterator i = data.begin(); i != data.end(); ++i) {
+        total += (*i - mean)*(*i - mean);
+    }
+    return total / (data.size());
+}
+
+double standard_deviation(const vector <double>& data, const double mean) {
+    return sqrt(variance(data, mean));
+}
+
+struct Stats {
+    double mean;
+    double stdev;
+    Stats(void) : mean(0), stdev(1) { }
+};
+
+// ann = fann_create_standard(num_layers, num_input, num_neurons_hidden, num_output);
+bool load_ann_metadata(string& ann_metadata_file,
+                       vector<string>& fields,
+                       map<string, Stats>& stats) {
+    ifstream in(ann_metadata_file.c_str());
+    if (!in.is_open()) {
+        return false;
+    }
+    string linebuf;
+    while (getline(in, linebuf)) {
+        // format is: field_name, mean, stdev
+        vector<string> m = split(linebuf, "\t ");
+        fields.push_back(m[0]);
+        Stats& s = stats[m[0]];
+        convert(m[1], s.mean);
+        convert(m[2], s.stdev);
+    }
+    in.close();
+    return true;
+}
+
+bool save_ann_metadata(string& ann_metadata_file,
+                       vector<string>& fields,
+                       map<string, Stats>& stats) {
+    ofstream out(ann_metadata_file.c_str());
+    if (!out.is_open()) {
+        return false;
+    }
+    for (vector<string>::iterator f = fields.begin(); f != fields.end(); ++f) {
+        Stats& s = stats[*f];
+        out << *f << "\t" << s.mean << "\t" << s.stdev << endl;
+    }
+    out.close();
+    return true;
+}
+
+void normalize_inputs(vector<double>& record, vector<string>& fields, map<string, Stats>& stats) {
+    vector<double>::iterator r = record.begin();
+    for (vector<string>::iterator f = fields.begin(); f != fields.end(); ++f, ++r) {
+        Stats& s = stats[*f];
+        *r = (*r - s.mean) / s.stdev;
+    }
+}
+
+void read_fields(Variant& var, int ai, vector<string>& fields, vector<double>& record) {
+    double td;
+    vector<string>::iterator j = fields.begin();
+    for (; j != fields.end(); ++j) {
+        if (*j == "QUAL") { // special handling...
+            td = var.quality;
+        } else {
+            if (var.info.find(*j) == var.info.end()) {
+                td = 0;
+            } else {
+                if (var.vcf->infoCounts[*j] == 1) { // for non Allele-variant fields
+                    convert(var.info[*j][0], td);
+                } else {
+                    convert(var.info[*j][ai], td);
+                }
+            }
+        }
+        record.push_back(td);
+    }
+}
+
+
 void printSummary(char** argv) {
     cerr << "usage: " << argv[0] << " [options]" << endl
          << endl
@@ -140,39 +246,23 @@ int main(int argc, char** argv)
 
     // check that all the fields files are the same
     vector<struct fann*> anns;
-    vector<string> fields;
+    vector<vector<string> > fields;
+    vector<map<string, Stats> > stats;
 
-    for (vector<string>::iterator annFile = annFiles.begin(); annFile != annFiles.end(); ++annFile) {
-        ifstream fieldsFile;
-        fieldsFile.open(string(*annFile + ".fields").c_str());
-        string line;
-        getline(fieldsFile, line);
-        vector<string> theseFields = split(line, "\t");
-        if (theseFields.empty()) {
-            cerr << "no fields provided, cannot execute neural net" << endl;
+    int i = 0;
+    for (vector<string>::iterator annFile = annFiles.begin(); annFile != annFiles.end(); ++annFile, ++i) {
+        vector<string> theseFields;
+        map<string, Stats> theseStats;
+        string annMetadataFile = *annFile + ".meta";
+        if (!load_ann_metadata(annMetadataFile, theseFields, theseStats)) {
+            cerr << "could not open " << annMetadataFile << " to read metadata" << endl;
             exit(1);
-        } else {
-            if (theseFields.front() == "QUAL") { // qual is always first according to vcfneuratrain
-                useQUAL = true;
-                theseFields.erase(theseFields.begin(), theseFields.begin() + 1); // erase the QUAL field, simplifies use
-            }
-        }
-        fieldsFile.close();
-
-        if (fields.empty()) {
-            fields = theseFields;
-        } else {
-            if (fields != theseFields) {
-                cerr << "differing field-sets provided" << endl
-                     << join(fields, " ") << endl
-                     << "... versus ..." << endl
-                     << join(theseFields, " ") << endl;
-                exit(1);
-            }
         }
 
         struct fann *ann = fann_create_from_file(annFile->c_str());
         anns.push_back(ann);
+        fields.push_back(theseFields);
+        stats.push_back(theseStats);
     }
 
     fann_type *calc_out;
@@ -180,15 +270,14 @@ int main(int argc, char** argv)
     Variant var(variantFile);
 
     if (!outputTag.empty()) {
-	string infostr;
-	if (!information.empty()) {
-	    infostr = ".  " + information;
-	}
-        variantFile.addHeaderLine("##INFO=<ID=" + outputTag + ",Number=A,Type=Float,Description=\"Probability given model described by " + join(annFiles, " ") + infostr + "\">");
-        cout << variantFile.header << endl;
-    } else {
-        cout << variantFile.header; // XXX BUG there shouldn't have to be two ways to write the header!!!
+        string infostr;
+        if (!information.empty()) {
+            infostr = ".  " + information;
+            variantFile.addHeaderLine("##INFO=<ID=" + outputTag + ",Number=A,Type=Float,Description=\"Probability given model described by " + join(annFiles, " ") + infostr + "\">");
+        }
     }
+
+    cout << variantFile.header << endl;
 
     while (variantFile.getNextVariant(var)) {
         if (var.info.find(outputTag) != var.info.end()) {
@@ -199,40 +288,35 @@ int main(int argc, char** argv)
         for (vector<string>::iterator a = var.alt.begin(); a != var.alt.end(); ++a) {
             string& alt = *a;
             int altindex = var.getAltAlleleIndex(alt);
+            long double fresult = 0; // floating point result, sum of 
 
-            vector<fann_type> input; //[fields.size()];
-            if (useQUAL) {
-                input.push_back(var.quality); // QUAL
-            }
-            double val; // placeholder for conversions
-            for (vector<string>::iterator f = fields.begin(); f != fields.end(); ++f) {
-                if (var.info[*f].size() == var.alt.size()) {
-                    convert(var.info[*f].at(altindex), val); input.push_back(val);
-                } else {
-                    convert(var.info[*f].front(), val); input.push_back(val);
+            int j = 0;
+            for (vector<struct fann*>::iterator ann = anns.begin(); ann != anns.end(); ++ann, ++j) {
+                map<string, Stats>& cstats = stats.at(j);
+                vector<string>& cfields = fields.at(j);
+                vector<double> record;
+                read_fields(var, altindex, cfields, record);
+                normalize_inputs(record, cfields, cstats);
+                vector<fann_type> input; //[fields.size()];
+                for (vector<double>::iterator d = record.begin(); d != record.end(); ++d) {
+                    input.push_back(*d);
                 }
-            }
-
-            long double fresult = 0; // floating point result
-            for (vector<struct fann*>::iterator ann = anns.begin(); ann != anns.end(); ++ann) {
                 calc_out = fann_run(*ann, &input[0]);
-                // rescale to [0,1] and add to the result sum
-                fresult += 1 - (1 + calc_out[0]) / 2;
+                fresult += calc_out[0];
             }
 
-            // convert to phred
-            //double result = double2phred(1 - (1 + calc_out[0]) / 2);
-            long double result = double2phred(fresult / anns.size());
+            // take mean, and convert to phred
+            long double result = double2phred(1 - (fresult / anns.size()));
 
             if (!outputTag.empty()) {
                 var.info[outputTag].push_back(convert(result));
             }
             if (writeQual) {
-		if (newqual == 0) {
-		    newqual = result;
-		} else {
-		    newqual = min(newqual, result);
-		}
+                if (newqual == 0) {
+                    newqual = result;
+                } else {
+                    newqual = min(newqual, result);
+                }
             }
         }
         if (writeQual) {
@@ -248,4 +332,5 @@ int main(int argc, char** argv)
     }
 
     return 0;
+
 }

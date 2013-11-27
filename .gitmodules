@@ -4,3 +4,6 @@
 [submodule "split"]
 	path = split
 	url = git://github.com/ekg/split
+[submodule "fann"]
+	path = fann
+	url = git://git.code.sf.net/p/fann/code

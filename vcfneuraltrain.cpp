@@ -394,6 +394,19 @@ int main(int argc, char** argv)
 
     Variant var(variantFile);
     while (variantFile.getNextVariant(var)) {
+        if (var.info.find(passTag) == var.info.end()) {
+            continue;
+        }
+        bool missingData = false;
+        for (vector<string>::iterator f = fields.begin(); f != fields.end(); ++f) {
+            if (var.info.find(*f) == var.info.end()) {
+                missingData = true;
+            }
+        }
+        if (missingData) {
+            continue;
+        }
+
         //cout << "processing " << var.sequenceName << ":" << var.position << endl;
         //
         // get the status of the validation (out of band)
@@ -401,8 +414,12 @@ int main(int argc, char** argv)
         // --- fail otherwise
         for (int a = 0; a < var.alt.size(); ++a) {
             if (var.info.find(passTag) != var.info.end()) {
-                if (var.info[passTag].at(a) == passValue) {
-                    dout.push_back(1); // passing
+                if (var.info[passTag].size() == var.alt.size()) {
+                    if (var.info[passTag].at(a) == passValue) {
+                        dout.push_back(1); // passing
+                    }
+                } else if (var.info[passTag].front() == passValue) {
+                        dout.push_back(1); // passing
                 } else {
                     dout.push_back(0); // failing
                 }
